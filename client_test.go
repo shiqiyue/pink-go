@@ -1,6 +1,7 @@
 package client
 
 import (
+	"context"
 	"github.com/busgo/pink-go/etcd"
 	"log"
 	"math/rand"
@@ -17,7 +18,7 @@ func TestNewPinkClient(t *testing.T) {
 		DialTimeout: time.Second * 5,
 	})
 	client := NewPinkClient(e, "user")
-	client.Subscribe("com.busgo.user.job.SignInDailyJob", new(UserJob))
+	client.Subscribe(&UserJob{})
 
 	for {
 		//t.Logf("client:%+v", client)
@@ -31,7 +32,7 @@ type UserJob struct {
 func (u *UserJob) Target() string {
 	return "com.busgo.user.job.SignInDailyJob"
 }
-func (u *UserJob) Execute(param string) (result string, err error) {
+func (u *UserJob) Execute(ctx context.Context, param string) (result string, err error) {
 
 	log.Printf("receive param:%s", param)
 	n := rand.Int63() % 20

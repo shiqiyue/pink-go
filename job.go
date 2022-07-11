@@ -1,7 +1,9 @@
 package client
 
+import "context"
+
 type Job interface {
 	Target() string
 	// execute job
-	Execute(param string) (string, error)
+	Execute(ctx context.Context, param string) (string, error)
 }

@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"github.com/busgo/pink-go/etcd"
-	"log"
+	"github.com/busgo/pink-go/log"
 	"net"
 	"strings"
 	"sync"
@@ -36,6 +36,7 @@ type PinkClient struct {
 	jobs                map[string]Job
 	executingJobs       map[string]*ExecuteSnapshot
 	rw                  sync.RWMutex
+	l                   log.Logger
 }
 
 type ExecuteSnapshot struct {
@@ -97,10 +98,15 @@ func NewPinkClient(cli *etcd.Cli, group string) *PinkClient {
 		jobs:                make(map[string]Job),
 		executingJobs:       make(map[string]*ExecuteSnapshot),
 		rw:                  sync.RWMutex{},
+		l:                   &log.StdLogger{},
 	}
 	go client.lookup()
 	go client.subscribeExecuteSnapshot()
 	return client
+}
+
+func (client *PinkClient) SetLogger(l log.Logger) {
+	client.l = l
 }
 
 // lookup
@@ -108,13 +114,13 @@ func (client *PinkClient) lookup() {
 	leaseId := int64(0)
 	leaseId = client.selfRegister(leaseId)
 	response := client.cli.Watch(client.instancePath)
-	log.Printf("the pink client instance %s self register watch to:%s", client.ip, client.instancePath)
+	client.l.Info(context.Background(), "the pink client instance %s self register watch to:%s", client.ip, client.instancePath)
 	for {
 		select {
 		case event := <-response.KeyChangeCh:
 			switch event.Event {
 			case etcd.KeyDeleteChangeEvent:
-				log.Printf("the pink client instance %s self register watch  to:%s key delete event:%+v", client.ip, client.instancePath, event)
+				client.l.Info(context.Background(), "the pink client instance %s self register watch  to:%s key delete event:%+v", client.ip, client.instancePath, event)
 				leaseId = client.selfRegister(leaseId)
 			}
 		}
@@ -125,7 +131,7 @@ func (client *PinkClient) lookup() {
 func (client *PinkClient) selfRegister(leaseId int64) int64 {
 
 RETRY:
-	log.Printf("the pink client instance %s self register to:%s", client.ip, client.instancePath)
+	client.l.Info(context.Background(), "the pink client instance %s self register to:%s", client.ip, client.instancePath)
 	if leaseId > 0 {
 		_ = client.cli.Revoke(context.Background(), leaseId)
 	}
@@ -134,23 +140,23 @@ RETRY:
 		time.Sleep(time.Second)
 		goto RETRY
 	}
-	log.Printf("the pink client instance %s self register to:%s ,leaseId %d success", client.ip, client.instancePath, leaseId)
+	client.l.Info(context.Background(), "the pink client instance %s self register to:%s ,leaseId %d success", client.ip, client.instancePath, leaseId)
 	return leaseId
 }
 
 // subscribe the job with target
-func (client *PinkClient) Subscribe(target string, job Job) {
+func (client *PinkClient) Subscribe(job Job) {
 	client.rw.Lock()
 	defer client.rw.Unlock()
-	if strings.TrimSpace(target) == "" || job == nil {
-		log.Printf("the pink client %s targe is nil or job is nil", client.instancePath)
+	if strings.TrimSpace(job.Target()) == "" || job == nil {
+		client.l.Info(context.Background(), "the pink client %s targe is nil or job is nil", client.instancePath)
 		return
 	}
-	if targetJob := client.jobs[target]; targetJob != nil {
-		log.Printf("the pink client %s target %s has exists", client.instancePath, target)
+	if targetJob := client.jobs[job.Target()]; targetJob != nil {
+		client.l.Info(context.Background(), "the pink client %s target %s has exists", client.instancePath, job.Target())
 		return
 	}
-	client.jobs[target] = job
+	client.jobs[job.Target()] = job
 }
 
 // subscribe execute snapshot
@@ -221,14 +227,14 @@ func (client *PinkClient) handleCreateSnapshot(kc *etcd.KeyChange) {
 	snapshot := new(ExecuteSnapshot).Decode(kc.Value)
 	targetJob := client.getTargetJob(kc.Key, snapshot)
 	if targetJob == nil {
-		log.Printf("the pink client %s target is nil  snapshot:%+v", client.instancePath, snapshot)
+		client.l.Info(context.Background(), "the pink client %s target is nil  snapshot:%+v", client.instancePath, snapshot)
 		return
 	}
 	if snapshot.State == Init {
 		go client.execute(kc.Key, targetJob, snapshot)
 		return
 	} else if snapshot.State == Doing { //
-		log.Printf("the pink client %s  state  is doing  set fail state, snapshot:%+v", client.instancePath, snapshot)
+		client.l.Info(context.Background(), "the pink client %s  state  is doing  set fail state, snapshot:%+v", client.instancePath, snapshot)
 		snapshot.State = Fail
 		snapshot.Result = "history snapshot"
 	}
@@ -245,7 +251,7 @@ func (client *PinkClient) handleUpdateSnapshot(kc *etcd.KeyChange) {
 	snapshot := new(ExecuteSnapshot).Decode(kc.Value)
 	targetJob := client.getTargetJob(kc.Key, snapshot)
 	if targetJob == nil {
-		log.Printf("the pink client %s target is nil  snapshot:%+v", client.instancePath, snapshot)
+		client.l.Info(context.Background(), "the pink client %s target is nil  snapshot:%+v", client.instancePath, snapshot)
 		return
 	}
 
@@ -256,7 +262,7 @@ func (client *PinkClient) handleUpdateSnapshot(kc *etcd.KeyChange) {
 
 // handle delete snapshot
 func (client *PinkClient) handleDeleteSnapshot(kc *etcd.KeyChange) {
-	log.Printf("the pink client %s handle delete snapshot key %s value %s", client.instancePath, kc.Key, kc.Value)
+	client.l.Info(context.Background(), "the pink client %s handle delete snapshot key %s value %s", client.instancePath, kc.Key, kc.Value)
 }
 
 // transfer snapshot to history
@@ -265,7 +271,7 @@ func (client *PinkClient) transfer(key string, snapshot *ExecuteSnapshot) {
 	targetKey := fmt.Sprintf("%s%s", ExecuteSnapshotHistoryPath, snapshot.Id)
 	err := client.cli.Transfer(context.Background(), key, targetKey, snapshot.Encode())
 	if err != nil {
-		log.Printf("the pink client %s transfer key %s target key %s snapshot %+v fail %+v", client.instancePath, key, targetKey, snapshot, err)
+		client.l.Info(context.Background(), "the pink client %s transfer key %s target key %s snapshot %+v fail %+v", client.instancePath, key, targetKey, snapshot, err)
 		return
 	}
 
@@ -273,10 +279,10 @@ func (client *PinkClient) transfer(key string, snapshot *ExecuteSnapshot) {
 
 // sync execute the snapshot to target job
 func (client *PinkClient) execute(key string, targetJob Job, snapshot *ExecuteSnapshot) {
-
+	ctx := context.Background()
 	s := client.checkExists(snapshot.JobId)
 	if s != nil {
-		log.Printf("the pink client %s execute snapshot found job id exists,snapshot:%+v", client.instancePath, snapshot)
+		client.l.Info(context.Background(), "the pink client %s execute snapshot found job id exists,snapshot:%+v", client.instancePath, snapshot)
 		if s.Id != snapshot.Id {
 			snapshot.State = Fail
 			snapshot.Result = "Job is Doing,not allow repeat execute"
@@ -292,12 +298,12 @@ func (client *PinkClient) execute(key string, targetJob Job, snapshot *ExecuteSn
 	now := time.Now()
 	snapshot.State = Doing
 	snapshot.StartTime = now.Format("2006-01-02 15:04:05")
-	err := client.cli.Put(context.Background(), key, snapshot.Encode())
+	err := client.cli.Put(ctx, key, snapshot.Encode())
 	if err != nil {
-		log.Printf("the pink client %s update snapshot state fail,snapshot:%+v", client.instancePath, snapshot)
+		client.l.Info(context.Background(), "the pink client %s update snapshot state fail,snapshot:%+v", client.instancePath, snapshot)
 		return
 	}
-	result, err := targetJob.Execute(snapshot.Param)
+	result, err := targetJob.Execute(ctx, snapshot.Param)
 	endTime := time.Now()
 	durationTime := endTime.Sub(now)
 	snapshot.Times = int64(durationTime / time.Second)
@@ -316,7 +322,7 @@ func (client *PinkClient) execute(key string, targetJob Job, snapshot *ExecuteSn
 func (client *PinkClient) deleteSnapshot(key string) {
 	err := client.cli.Delete(context.Background(), key)
 	if err != nil {
-		log.Printf("the pink client %s delete key %s fail %+v", client.instancePath, key, err)
+		client.l.Info(context.Background(), "the pink client %s delete key %s fail %+v", client.instancePath, key, err)
 		return
 	}
 

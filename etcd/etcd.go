@@ -2,10 +2,10 @@ package etcd
 
 import (
 	"context"
+	"github.com/busgo/pink-go/log"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
-	"log"
 	"sync"
 	"time"
 )
@@ -28,6 +28,7 @@ type Cli struct {
 	kv        clientv3.KV
 	lease     clientv3.Lease
 	elections map[string]*concurrency.Election
+	l         log.Logger
 	sync.RWMutex
 }
 
@@ -69,7 +70,12 @@ func NewEtcdCli(config *CliConfig) (*Cli, error) {
 		kv:        clientv3.NewKV(c),
 		lease:     clientv3.NewLease(c),
 		elections: make(map[string]*concurrency.Election),
+		l:         &log.StdLogger{},
 	}, err
+}
+
+func (cli *Cli) SetLogger(l log.Logger) {
+	cli.l = l
 }
 
 // get with key
@@ -146,7 +152,7 @@ func (cli *Cli) PutWithNotExist(ctx context.Context, key, value string) error {
 
 	resp, err := tx.Commit()
 
-	log.Printf("resp:%+v", resp)
+	cli.l.Info(ctx, "resp:%+v", resp)
 
 	return err
 }
@@ -186,22 +192,22 @@ func (cli *Cli) Keepalive(ctx context.Context, key, value string, ttl int64) (in
 	if err != nil {
 		return 0, err
 	}
-	go keepaliveHandle(key, ch)
+	go cli.keepaliveHandle(key, ch)
 	return int64(resp.ID), nil
 }
 
 // handle keep alive
-func keepaliveHandle(key string, ch <-chan *clientv3.LeaseKeepAliveResponse) {
+func (cli *Cli) keepaliveHandle(key string, ch <-chan *clientv3.LeaseKeepAliveResponse) {
 
 	for {
 		select {
 		case c := <-ch:
 
 			if c == nil {
-				log.Printf("the keep alive key:%s has closed", key)
+				cli.l.Info(context.Background(), "the keep alive key:%s has closed", key)
 				return
 			}
-			log.Printf("keep alive for key:%s .................%+v", key, c)
+			cli.l.Info(context.Background(), "keep alive for key:%s .................%+v", key, c)
 		}
 	}
 }
@@ -213,7 +219,7 @@ func (cli *Cli) Watch(key string) *WatchKeyResponse {
 	keyChangeCh := make(chan *KeyChange, defaultKeyChangeSize)
 
 	// start watch
-	go keyChangeHandle(key, watchChan, keyChangeCh)
+	go cli.keyChangeHandle(key, watchChan, keyChangeCh)
 	return &WatchKeyResponse{
 		Watcher:     watcher,
 		KeyChangeCh: keyChangeCh,
@@ -229,7 +235,7 @@ func (cli *Cli) WatchWithPrefix(prefix string) *WatchKeyResponse {
 	keyChangeCh := make(chan *KeyChange, defaultKeyChangeSize)
 
 	// start watch
-	go keyChangeHandle(prefix, watchChan, keyChangeCh)
+	go cli.keyChangeHandle(prefix, watchChan, keyChangeCh)
 	return &WatchKeyResponse{
 		Watcher:     watcher,
 		KeyChangeCh: keyChangeCh,
@@ -237,13 +243,13 @@ func (cli *Cli) WatchWithPrefix(prefix string) *WatchKeyResponse {
 
 }
 
-func keyChangeHandle(prefix string, watchChan clientv3.WatchChan, keyChangeCh chan *KeyChange) {
+func (cli *Cli) keyChangeHandle(prefix string, watchChan clientv3.WatchChan, keyChangeCh chan *KeyChange) {
 
 	for {
 		select {
 		case ch, ok := <-watchChan:
 			if !ok {
-				log.Printf("the watch prefix key:%s has cancel", prefix)
+				cli.l.Info(context.Background(), "the watch prefix key:%s has cancel", prefix)
 				keyChangeCh <- &KeyChange{
 					Event: KeyCancelChangeEvent,
 					Key:   prefix,
@@ -283,7 +289,7 @@ func (cli *Cli) Campaign(ctx context.Context, id, prefix string, ttl int64) erro
 	// create a session
 	session, err := concurrency.NewSession(cli.c, concurrency.WithTTL(int(ttl)))
 	if err != nil {
-		log.Printf("new session fail,id:%s,prefix:%s,%+v", id, prefix, err)
+		cli.l.Info(ctx, "new session fail,id:%s,prefix:%s,%+v", id, prefix, err)
 		return err
 	}
 
@@ -301,7 +307,7 @@ func (cli *Cli) getElection(prefix string) (*concurrency.Election, error) {
 	// create a session
 	session, err := concurrency.NewSession(cli.c)
 	if err != nil {
-		log.Printf("new session fail,prefix:%s,%+v", prefix, err)
+		cli.l.Info(context.Background(), "new session fail,prefix:%s,%+v", prefix, err)
 		return nil, err
 	}
 	election = concurrency.NewElection(session, prefix)
