@@ -3,11 +3,11 @@ package etcd
 import (
 	"context"
 	"github.com/busgo/pink-go/log"
+	"github.com/pkg/errors"
 	"go.etcd.io/etcd/api/v3/mvccpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.etcd.io/etcd/client/v3/concurrency"
 	"sync"
-	"time"
 )
 
 type KeyChangeEvent int32
@@ -32,14 +32,6 @@ type Cli struct {
 	sync.RWMutex
 }
 
-// etcd cli config
-type CliConfig struct {
-	Endpoints   []string
-	UserName    string
-	Password    string
-	DialTimeout time.Duration
-}
-
 type WatchKeyResponse struct {
 	Watcher     clientv3.Watcher
 	KeyChangeCh chan *KeyChange
@@ -52,17 +44,27 @@ type KeyChange struct {
 }
 
 // new etcd cli
-func NewEtcdCli(config *CliConfig) (*Cli, error) {
+func NewEtcdCli(options ...Option) (*Cli, error) {
+	cfg, err := newConfig(options...)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.endpoints == nil || len(cfg.endpoints) == 0 {
+		return nil, errors.New("endpoints can not be empty")
+	}
 
 	c, err := clientv3.New(clientv3.Config{
-		Endpoints:   config.Endpoints,
-		Username:    config.UserName,
-		Password:    config.Password,
-		DialTimeout: config.DialTimeout,
+		Endpoints:   cfg.endpoints,
+		Username:    cfg.userName,
+		Password:    cfg.password,
+		DialTimeout: cfg.dialTimeout,
 	})
 
 	if err != nil {
 		return nil, err
+	}
+	if cfg.l == nil {
+		cfg.l = &log.StdLogger{}
 	}
 
 	return &Cli{
@@ -70,12 +72,8 @@ func NewEtcdCli(config *CliConfig) (*Cli, error) {
 		kv:        clientv3.NewKV(c),
 		lease:     clientv3.NewLease(c),
 		elections: make(map[string]*concurrency.Election),
-		l:         &log.StdLogger{},
+		l:         cfg.l,
 	}, err
-}
-
-func (cli *Cli) SetLogger(l log.Logger) {
-	cli.l = l
 }
 
 // get with key

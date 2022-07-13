@@ -11,13 +11,8 @@ import (
 
 func TestNewPinkClient(t *testing.T) {
 
-	e, _ := etcd.NewEtcdCli(&etcd.CliConfig{
-		Endpoints:   []string{"127.0.0.1:2379"},
-		UserName:    "",
-		Password:    "",
-		DialTimeout: time.Second * 5,
-	})
-	client := NewPinkClient(e, "user")
+	e, _ := etcd.NewEtcdCli(etcd.OptionDialTimeout(time.Second*5), etcd.OptionEndpoints([]string{"127.0.0.1:2375"}))
+	client, _ := NewPinkClient(OptionCli(e), OptionGroup("trade"))
 	client.Subscribe(&UserJob{})
 
 	for {

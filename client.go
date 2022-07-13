@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/busgo/pink-go/etcd"
 	"github.com/busgo/pink-go/log"
+	"github.com/pkg/errors"
 	"net"
 	"strings"
 	"sync"
@@ -37,6 +38,7 @@ type PinkClient struct {
 	executingJobs       map[string]*ExecuteSnapshot
 	rw                  sync.RWMutex
 	l                   log.Logger
+	extensions          []Extension
 }
 
 type ExecuteSnapshot struct {
@@ -90,23 +92,38 @@ func GetLocalIP() string {
 }
 
 // new PinkClient
-func NewPinkClient(cli *etcd.Cli, group string) *PinkClient {
-	ip := GetLocalIP()
-	client := &PinkClient{cli: cli, group: group, ip: ip,
-		instancePath:        fmt.Sprintf(InstancePath, group, ip),
-		executeSnapshotPath: fmt.Sprintf(ExecuteSnapshotPath, group, ip),
+func NewPinkClient(options ...Option) (*PinkClient, error) {
+	cfg, err := newConfig(options...)
+	if err != nil {
+		return nil, err
+	}
+	if cfg.group == "" {
+		return nil, errors.New("group can not be empty")
+	}
+	if cfg.cli == nil {
+		return nil, errors.New("cli can not be null")
+	}
+	if cfg.l == nil {
+		cfg.l = &log.StdLogger{}
+	}
+	if cfg.ip == "" {
+		cfg.ip = GetLocalIP()
+	}
+	if cfg.extensions == nil {
+		cfg.extensions = make([]Extension, 0)
+	}
+	client := &PinkClient{cli: cfg.cli, group: cfg.group, ip: cfg.ip,
+		instancePath:        fmt.Sprintf(InstancePath, cfg.group, cfg.ip),
+		executeSnapshotPath: fmt.Sprintf(ExecuteSnapshotPath, cfg.group, cfg.ip),
 		jobs:                make(map[string]Job),
 		executingJobs:       make(map[string]*ExecuteSnapshot),
 		rw:                  sync.RWMutex{},
-		l:                   &log.StdLogger{},
+		l:                   cfg.l,
+		extensions:          cfg.extensions,
 	}
 	go client.lookup()
 	go client.subscribeExecuteSnapshot()
-	return client
-}
-
-func (client *PinkClient) SetLogger(l log.Logger) {
-	client.l = l
+	return client, nil
 }
 
 // lookup
@@ -227,14 +244,14 @@ func (client *PinkClient) handleCreateSnapshot(kc *etcd.KeyChange) {
 	snapshot := new(ExecuteSnapshot).Decode(kc.Value)
 	targetJob := client.getTargetJob(kc.Key, snapshot)
 	if targetJob == nil {
-		client.l.Info(context.Background(), "the pink client %s target is nil  snapshot:%+v", client.instancePath, snapshot)
+		client.l.Error(context.Background(), "the pink client %s target is nil  snapshot:%+v", client.instancePath, snapshot)
 		return
 	}
 	if snapshot.State == Init {
 		go client.execute(kc.Key, targetJob, snapshot)
 		return
 	} else if snapshot.State == Doing { //
-		client.l.Info(context.Background(), "the pink client %s  state  is doing  set fail state, snapshot:%+v", client.instancePath, snapshot)
+		client.l.Error(context.Background(), "the pink client %s  state  is doing  set fail state, snapshot:%+v", client.instancePath, snapshot)
 		snapshot.State = Fail
 		snapshot.Result = "history snapshot"
 	}
@@ -303,7 +320,17 @@ func (client *PinkClient) execute(key string, targetJob Job, snapshot *ExecuteSn
 		client.l.Info(context.Background(), "the pink client %s update snapshot state fail,snapshot:%+v", client.instancePath, snapshot)
 		return
 	}
+	if client.extensions != nil && len(client.extensions) > 0 {
+		for _, extension := range client.extensions {
+			ctx = extension.Before(ctx, targetJob)
+		}
+	}
 	result, err := targetJob.Execute(ctx, snapshot.Param)
+	if client.extensions != nil && len(client.extensions) > 0 {
+		for _, extension := range client.extensions {
+			ctx = extension.After(ctx, targetJob)
+		}
+	}
 	endTime := time.Now()
 	durationTime := endTime.Sub(now)
 	snapshot.Times = int64(durationTime / time.Second)
