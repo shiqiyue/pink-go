@@ -205,7 +205,7 @@ func (cli *Cli) keepaliveHandle(key string, ch <-chan *clientv3.LeaseKeepAliveRe
 				cli.l.Info(context.Background(), "the keep alive key:%s has closed", key)
 				return
 			}
-			cli.l.Info(context.Background(), "keep alive for key:%s .................%+v", key, c)
+			// cli.l.Info(context.Background(), "keep alive for key:%s .................%+v", key, c)
 		}
 	}
 }
